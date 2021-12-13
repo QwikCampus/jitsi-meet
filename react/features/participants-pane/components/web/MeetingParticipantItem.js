@@ -2,7 +2,6 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 
-import { isSupported } from '../../../av-moderation/functions';
 import { translate } from '../../../base/i18n';
 import { JitsiTrackEvents } from '../../../base/lib-jitsi-meet';
 import { MEDIA_TYPE } from '../../../base/media';
@@ -10,7 +9,7 @@ import {
     getLocalParticipant,
     getParticipantByIdOrUndefined,
     getParticipantDisplayName,
-    isLocalParticipantModerator,
+    hasRaisedHand,
     isParticipantModerator
 } from '../../../base/participants';
 import { connect } from '../../../base/redux';
@@ -20,16 +19,17 @@ import {
     isParticipantAudioMuted,
     isParticipantVideoMuted
 } from '../../../base/tracks';
-import { ACTION_TRIGGER, type MediaState, MEDIA_STATE, QUICK_ACTION_BUTTON } from '../../constants';
+import { normalizeAccents } from '../../../base/util/strings';
+import { ACTION_TRIGGER, type MediaState, MEDIA_STATE } from '../../constants';
 import {
     getParticipantAudioMediaState,
     getParticipantVideoMediaState,
     getQuickActionButtonType
 } from '../../functions';
-import ParticipantQuickAction from '../ParticipantQuickAction';
 
+import ParticipantActionEllipsis from './ParticipantActionEllipsis';
 import ParticipantItem from './ParticipantItem';
-import { ParticipantActionEllipsis } from './styled';
+import ParticipantQuickAction from './ParticipantQuickAction';
 
 type Props = {
 
@@ -61,7 +61,7 @@ type Props = {
     /**
      * True if the participant is the local participant.
      */
-    _local: Boolean,
+    _local: boolean,
 
     /**
      * Whether or not the local participant is moderator.
@@ -72,6 +72,11 @@ type Props = {
      * Shared video local participant owner.
      */
     _localVideoOwner: boolean,
+
+    /**
+     * Whether or not the participant name matches the search string.
+     */
+    _matchesSearch: boolean,
 
     /**
      * The participant.
@@ -107,7 +112,7 @@ type Props = {
     askUnmuteText: string,
 
     /**
-     * Is this item highlighted
+     * Is this item highlighted.
      */
     isHighlighted: boolean,
 
@@ -122,12 +127,12 @@ type Props = {
     muteParticipantButtonText: string,
 
     /**
-     * Callback for the activation of this item's context menu
+     * Callback for the activation of this item's context menu.
      */
     onContextMenu: Function,
 
     /**
-     * Callback for the mouse leaving this item
+     * Callback for the mouse leaving this item.
      */
     onLeave: Function,
 
@@ -174,10 +179,9 @@ function MeetingParticipantItem({
     _audioTrack,
     _disableModeratorIndicator,
     _displayName,
-    _isModerationSupported,
     _local,
-    _localModerator,
     _localVideoOwner,
+    _matchesSearch,
     _participant,
     _participantID,
     _quickActionButtonType,
@@ -225,6 +229,10 @@ function MeetingParticipantItem({
         };
     }, [ _audioTrack ]);
 
+    if (!_matchesSearch) {
+        return null;
+    }
+
     const audioMediaState = _audioMediaState === MEDIA_STATE.UNMUTED && hasAudioLevels
         ? MEDIA_STATE.DOMINANT_SPEAKER : _audioMediaState;
 
@@ -233,10 +241,6 @@ function MeetingParticipantItem({
     if (_audioMediaState !== MEDIA_STATE.FORCE_MUTED && _videoMediaState === MEDIA_STATE.FORCE_MUTED) {
         askToUnmuteText = t('participantsPane.actions.allowVideo');
     }
-
-    const buttonType = _isModerationSupported
-        ? _localModerator ? QUICK_ACTION_BUTTON.ASK_TO_UNMUTE : _quickActionButtonType
-        : '';
 
     return (
         <ParticipantItem
@@ -259,19 +263,20 @@ function MeetingParticipantItem({
                 && <>
                     <ParticipantQuickAction
                         askUnmuteText = { askToUnmuteText }
-                        buttonType = { buttonType }
+                        buttonType = { _quickActionButtonType }
                         muteAudio = { muteAudio }
                         muteParticipantButtonText = { muteParticipantButtonText }
-                        participantID = { _participantID } />
+                        participantID = { _participantID }
+                        participantName = { _displayName } />
                     <ParticipantActionEllipsis
-                        aria-label = { participantActionEllipsisLabel }
+                        accessibilityLabel = { participantActionEllipsisLabel }
                         onClick = { onContextMenu } />
                 </>
             }
 
             {!overflowDrawer && _localVideoOwner && _participant?.isFakeParticipant && (
                 <ParticipantActionEllipsis
-                    aria-label = { participantActionEllipsisLabel }
+                    accessibilityLabel = { participantActionEllipsisLabel }
                     onClick = { onContextMenu } />
             )}
         </ParticipantItem>
@@ -287,11 +292,30 @@ function MeetingParticipantItem({
  * @returns {Props}
  */
 function _mapStateToProps(state, ownProps): Object {
-    const { participantID } = ownProps;
+    const { participantID, searchString } = ownProps;
     const { ownerId } = state['features/shared-video'];
     const localParticipantId = getLocalParticipant(state).id;
 
     const participant = getParticipantByIdOrUndefined(state, participantID);
+
+    const _displayName = getParticipantDisplayName(state, participant?.id);
+
+    let _matchesSearch = false;
+    const names = normalizeAccents(_displayName)
+        .toLowerCase()
+        .split(' ');
+    const lowerCaseSearchString = searchString.toLowerCase();
+
+    if (lowerCaseSearchString === '') {
+        _matchesSearch = true;
+    } else {
+        for (const name of names) {
+            if (name.startsWith(lowerCaseSearchString)) {
+                _matchesSearch = true;
+                break;
+            }
+        }
+    }
 
     const _isAudioMuted = isParticipantAudioMuted(participant, state);
     const _isVideoMuted = isParticipantVideoMuted(participant, state);
@@ -305,21 +329,18 @@ function _mapStateToProps(state, ownProps): Object {
 
     const { disableModeratorIndicator } = state['features/base/config'];
 
-    const _localModerator = isLocalParticipantModerator(state);
-
     return {
         _audioMediaState,
         _audioTrack,
         _disableModeratorIndicator: disableModeratorIndicator,
-        _displayName: getParticipantDisplayName(state, participant?.id),
-        _isModerationSupported: isSupported()(state),
+        _displayName,
         _local: Boolean(participant?.local),
-        _localModerator,
         _localVideoOwner: Boolean(ownerId === localParticipantId),
+        _matchesSearch,
         _participant: participant,
         _participantID: participant?.id,
         _quickActionButtonType,
-        _raisedHand: Boolean(participant?.raisedHand),
+        _raisedHand: hasRaisedHand(participant),
         _videoMediaState
     };
 }
